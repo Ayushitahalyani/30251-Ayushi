@@ -1,0 +1,169 @@
+# frontend_fin.py
+import streamlit as st
+import pandas as pd
+from backend_fin import DatabaseManager
+import hashlib
+
+# Initialize the database manager
+db = DatabaseManager()
+
+# Placeholder for user login status
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.user_id = None
+    st.session_state.username = None
+
+def hash_password(password):
+    """Hashes a password using SHA-256."""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def login_form():
+    """Renders the login/signup form."""
+    st.title("Financial Portfolio Tracker 📈")
+    st.subheader("Login or Sign Up")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+
+    if st.button("Login"):
+        user = db.read_user(username)
+        if user and hash_password(password) == user[1]: # This is a simplified check, in a real app you would retrieve the stored hash
+            st.session_state.logged_in = True
+            st.session_state.user_id = user[0]
+            st.session_state.username = user[1]
+            st.success("Logged in successfully!")
+            st.rerun()
+        else:
+            st.error("Invalid username or password.")
+    
+    if st.button("Sign Up"):
+        if username and password:
+            password_hash = hash_password(password)
+            if db.create_user(username, password_hash):
+                st.success("User created successfully! Please log in.")
+            else:
+                st.error("User could not be created. Username might already exist.")
+        else:
+            st.warning("Please enter a username and password.")
+
+def main_app():
+    """Renders the main application after successful login."""
+    st.sidebar.title(f"Welcome, {st.session_state.username}!")
+    st.sidebar.button("Logout", on_click=logout)
+
+    st.title("Financial Portfolio Dashboard 📊")
+    
+    # Use tabs for a clean UI
+    tab1, tab2, tab3, tab4 = st.tabs(["View Portfolio", "Add/Manage Assets", "Log Transactions", "Business Insights"])
+
+    with tab1:
+        st.header("Current Portfolio")
+        assets = db.read_assets(st.session_state.user_id)
+        if assets:
+            df = pd.DataFrame(assets, columns=["Asset ID", "Ticker", "Asset Name", "Asset Class", "Current Price"])
+            st.dataframe(df)
+        else:
+            st.info("Your portfolio is empty. Add some assets to get started!")
+
+    with tab2:
+        st.header("Add a New Asset")
+        with st.form("add_asset_form"):
+            ticker = st.text_input("Ticker Symbol").upper()
+            asset_name = st.text_input("Asset Name")
+            asset_class = st.selectbox("Asset Class", ["Equity", "Fixed Income", "Cryptocurrency", "Other"])
+            submit_button = st.form_submit_button("Add Asset")
+            
+            if submit_button:
+                if ticker and asset_name and asset_class:
+                    asset_id = db.create_asset(st.session_state.user_id, ticker, asset_name, asset_class)
+                    if asset_id:
+                        st.success(f"Asset '{asset_name}' added successfully with ID: {asset_id}!")
+                    else:
+                        st.error("Failed to add asset.")
+                else:
+                    st.warning("Please fill in all fields.")
+        
+        st.header("Update Asset Price")
+        assets_list = db.read_assets(st.session_state.user_id)
+        asset_options = {f"{a[1]} ({a[2]})": a[0] for a in assets_list}
+        selected_asset = st.selectbox("Select Asset to Update", list(asset_options.keys()))
+        new_price = st.number_input("New Price", min_value=0.01)
+        if st.button("Update Price"):
+            if selected_asset and new_price:
+                asset_id = asset_options[selected_asset]
+                if db.update_asset_price(asset_id, new_price):
+                    st.success("Asset price updated successfully!")
+                else:
+                    st.error("Failed to update asset price.")
+    
+    with tab3:
+        st.header("Log a New Transaction")
+        assets_list = db.read_assets(st.session_state.user_id)
+        asset_options = {f"{a[1]} ({a[2]})": a[0] for a in assets_list}
+        
+        with st.form("add_transaction_form"):
+            selected_asset = st.selectbox("Select Asset for Transaction", list(asset_options.keys()))
+            transaction_type = st.selectbox("Transaction Type", ["BUY", "SELL", "DIVIDEND"])
+            transaction_date = st.date_input("Transaction Date")
+            shares_amount = st.number_input("Shares/Amount", min_value=0.01)
+            cost_basis = st.number_input("Cost Basis / Price per share", min_value=0.01)
+            
+            submit_button = st.form_submit_button("Log Transaction")
+            
+            if submit_button:
+                if selected_asset and transaction_date and shares_amount and cost_basis:
+                    asset_id = asset_options[selected_asset]
+                    if db.create_transaction(st.session_state.user_id, asset_id, transaction_date, transaction_type, shares_amount, cost_basis):
+                        st.success("Transaction logged successfully!")
+                    else:
+                        st.error("Failed to log transaction.")
+                else:
+                    st.warning("Please fill in all fields.")
+        
+        st.header("Transaction History")
+        transactions = db.read_transactions(st.session_state.user_id)
+        if transactions:
+            df = pd.DataFrame(transactions, columns=["ID", "User ID", "Asset ID", "Date", "Type", "Shares", "Cost/Price"])
+            st.dataframe(df)
+
+    with tab4:
+        st.header("Business Insights & Analysis")
+        
+        # Section with COUNT, SUM, AVERAGE, MIN, MAX
+        st.subheader("Key Portfolio Metrics")
+        summary = db.get_portfolio_summary(st.session_state.user_id)
+        if summary:
+            col1, col2, col3, col4, col5 = st.columns(5)
+            with col1:
+                st.metric(label="Total Assets", value=summary["asset_count"])
+            with col2:
+                st.metric(label="Total Portfolio Value", value=f"${summary['total_portfolio_value']:,.2f}" if summary["total_portfolio_value"] else "N/A")
+            with col3:
+                st.metric(label="Average Cost Basis", value=f"${summary['avg_cost_basis']:.2f}" if summary["avg_cost_basis"] else "N/A")
+            with col4:
+                st.metric(label="Max Cost Basis", value=f"${summary['max_cost_basis']:.2f}" if summary["max_cost_basis"] else "N/A")
+            with col5:
+                st.metric(label="Min Cost Basis", value=f"${summary['min_cost_basis']:.2f}" if summary["min_cost_basis"] else "N/A")
+        else:
+            st.info("No data available for insights. Add assets and transactions first.")
+            
+        st.subheader("Portfolio Breakdown by Asset Class")
+        allocations = db.get_asset_allocation(st.session_state.user_id)
+        if allocations:
+            df_alloc = pd.DataFrame(allocations, columns=["Asset Class", "Value"])
+            st.dataframe(df_alloc)
+            st.bar_chart(df_alloc.set_index("Asset Class"))
+        else:
+            st.info("No data available for asset allocation.")
+
+def logout():
+    """Logs the user out."""
+    st.session_state.logged_in = False
+    st.session_state.user_id = None
+    st.session_state.username = None
+    st.rerun()
+
+# Main application logic
+if st.session_state.logged_in:
+    main_app()
+else:
+    login_form()
