@@ -1,0 +1,36 @@
+-- Create the database
+CREATE DATABASE fin_portfolio_tracker;
+
+-- Connect to the new database
+\c fin_portfolio_tracker;
+
+-- Create the tables
+CREATE TABLE users (
+    user_id SERIAL PRIMARY KEY,
+    username VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE assets (
+    asset_id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL,
+    ticker VARCHAR(10) NOT NULL,
+    asset_name VARCHAR(255) NOT NULL,
+    asset_class VARCHAR(50) NOT NULL,
+    current_price DECIMAL(18, 8),
+    last_updated TIMESTAMP WITH TIME ZONE,
+    FOREIGN KEY (user_id) REFERENCES users (user_id)
+);
+
+CREATE TABLE transactions (
+    transaction_id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL,
+    asset_id INT NOT NULL,
+    transaction_date DATE NOT NULL,
+    transaction_type VARCHAR(10) NOT NULL CHECK (transaction_type IN ('BUY', 'SELL', 'DIVIDEND')),
+    shares_amount DECIMAL(18, 8) NOT NULL,
+    cost_basis DECIMAL(18, 8) NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users (user_id),
+    FOREIGN KEY (asset_id) REFERENCES assets (asset_id)
+);
