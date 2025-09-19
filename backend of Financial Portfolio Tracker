@@ -1,0 +1,245 @@
+# backend_fin.py
+import psycopg2
+from psycopg2 import sql
+import os
+
+class DatabaseManager:
+    def __init__(self):
+        # Database connection details from environment variables
+        self.host = os.environ.get("DB_HOST", "localhost")
+        self.database = os.environ.get("DB_NAME", "fin_portfolio_tracker")
+        self.user = os.environ.get("DB_USER", "postgres")
+        self.password = os.environ.get("DB_PASS", "your_password") # IMPORTANT: Change to your actual password
+
+    def connect(self):
+        """Establishes a connection to the PostgreSQL database."""
+        try:
+            conn = psycopg2.connect(
+                host=self.host,
+                database=self.database,
+                user=self.user,
+                password=self.password
+            )
+            return conn
+        except (Exception, psycopg2.Error) as error:
+            print("Error while connecting to PostgreSQL:", error)
+            return None
+
+    # --- CRUD Operations for Users ---
+    
+    def create_user(self, username, password_hash):
+        """CREATE: Adds a new user to the database."""
+        conn = self.connect()
+        if conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO users (username, password_hash) VALUES (%s, %s);",
+                        (username, password_hash)
+                    )
+                    conn.commit()
+                    return True
+            except psycopg2.IntegrityError:
+                print(f"User with username '{username}' already exists.")
+                return False
+            finally:
+                conn.close()
+        return False
+
+    def read_user(self, username):
+        """READ: Retrieves user information by username."""
+        conn = self.connect()
+        if conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT user_id, username FROM users WHERE username = %s;",
+                    (username,)
+                )
+                user = cur.fetchone()
+            conn.close()
+            return user
+        return None
+
+    # Update and Delete functionalities are not explicitly required by the prompt for users, but can be added here.
+
+    # --- CRUD Operations for Assets ---
+    
+    def create_asset(self, user_id, ticker, asset_name, asset_class):
+        """CREATE: Adds a new asset to a user's portfolio."""
+        conn = self.connect()
+        if conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO assets (user_id, ticker, asset_name, asset_class) VALUES (%s, %s, %s, %s) RETURNING asset_id;",
+                        (user_id, ticker, asset_name, asset_class)
+                    )
+                    asset_id = cur.fetchone()[0]
+                    conn.commit()
+                    return asset_id
+            except psycopg2.IntegrityError:
+                print(f"Asset '{ticker}' for user '{user_id}' already exists.")
+                return None
+            finally:
+                conn.close()
+        return None
+
+    def read_assets(self, user_id):
+        """READ: Retrieves all assets for a given user."""
+        conn = self.connect()
+        if conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT asset_id, ticker, asset_name, asset_class, current_price FROM assets WHERE user_id = %s;",
+                    (user_id,)
+                )
+                assets = cur.fetchall()
+            conn.close()
+            return assets
+        return []
+
+    def update_asset_price(self, asset_id, new_price):
+        """UPDATE: Updates the current price of an asset."""
+        conn = self.connect()
+        if conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE assets SET current_price = %s, last_updated = CURRENT_TIMESTAMP WHERE asset_id = %s;",
+                        (new_price, asset_id)
+                    )
+                    conn.commit()
+                    return True
+            finally:
+                conn.close()
+        return False
+
+    def delete_asset(self, asset_id):
+        """DELETE: Removes an asset from the portfolio."""
+        conn = self.connect()
+        if conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM assets WHERE asset_id = %s;", (asset_id,))
+                    conn.commit()
+                    return True
+            finally:
+                conn.close()
+        return False
+    
+    # --- CRUD Operations for Transactions ---
+    
+    def create_transaction(self, user_id, asset_id, transaction_date, transaction_type, shares_amount, cost_basis):
+        """CREATE: Logs a new transaction."""
+        conn = self.connect()
+        if conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO transactions (user_id, asset_id, transaction_date, transaction_type, shares_amount, cost_basis) VALUES (%s, %s, %s, %s, %s, %s);",
+                        (user_id, asset_id, transaction_date, transaction_type, shares_amount, cost_basis)
+                    )
+                    conn.commit()
+                    return True
+            finally:
+                conn.close()
+        return False
+    
+    def read_transactions(self, user_id, asset_id=None):
+        """READ: Retrieves transactions for a user or a specific asset."""
+        conn = self.connect()
+        if conn:
+            with conn.cursor() as cur:
+                if asset_id:
+                    cur.execute(
+                        "SELECT * FROM transactions WHERE user_id = %s AND asset_id = %s ORDER BY transaction_date DESC;",
+                        (user_id, asset_id)
+                    )
+                else:
+                    cur.execute(
+                        "SELECT * FROM transactions WHERE user_id = %s ORDER BY transaction_date DESC;",
+                        (user_id,)
+                    )
+                transactions = cur.fetchall()
+            conn.close()
+            return transactions
+        return []
+
+    # --- Business Insights using Aggregate Functions ---
+
+    def get_portfolio_summary(self, user_id):
+        """
+        Provides business insights with aggregate functions.
+        - Total number of assets (COUNT)
+        - Total portfolio value (SUM of shares * current_price)
+        - Average cost basis per share (AVG)
+        - Highest cost basis per share (MAX)
+        - Lowest cost basis per share (MIN)
+        """
+        conn = self.connect()
+        if conn:
+            try:
+                with conn.cursor() as cur:
+                    # Calculate total portfolio value and number of assets
+                    cur.execute("""
+                        SELECT COUNT(t1.asset_id),
+                               SUM(t1.current_value)
+                        FROM (
+                            SELECT 
+                                a.asset_id,
+                                (SELECT SUM(shares_amount) FROM transactions WHERE asset_id = a.asset_id AND transaction_type IN ('BUY', 'DIVIDEND') - COALESCE(SUM(shares_amount), 0) FROM transactions WHERE asset_id = a.asset_id AND transaction_type = 'SELL') AS total_shares,
+                                a.current_price,
+                                (SELECT SUM(shares_amount) FROM transactions WHERE asset_id = a.asset_id AND transaction_type IN ('BUY', 'DIVIDEND') - COALESCE(SUM(shares_amount), 0) FROM transactions WHERE asset_id = a.asset_id AND transaction_type = 'SELL') * a.current_price AS current_value
+                            FROM assets a
+                            WHERE a.user_id = %s
+                        ) AS t1;
+                    """, (user_id,))
+                    count_sum = cur.fetchone()
+
+                    # Calculate average, min, max cost basis
+                    cur.execute("""
+                        SELECT AVG(cost_basis),
+                               MAX(cost_basis),
+                               MIN(cost_basis)
+                        FROM transactions
+                        WHERE user_id = %s AND transaction_type = 'BUY';
+                    """, (user_id,))
+                    avg_min_max = cur.fetchone()
+
+                    return {
+                        "asset_count": count_sum[0],
+                        "total_portfolio_value": count_sum[1],
+                        "avg_cost_basis": avg_min_max[0],
+                        "max_cost_basis": avg_min_max[1],
+                        "min_cost_basis": avg_min_max[2]
+                    }
+            except Exception as e:
+                print("Error getting portfolio summary:", e)
+                return {}
+            finally:
+                conn.close()
+        return {}
+
+    def get_asset_allocation(self, user_id):
+        """
+        Calculates portfolio breakdown by asset class.
+        """
+        conn = self.connect()
+        if conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT a.asset_class,
+                               SUM((SELECT SUM(shares_amount) FROM transactions WHERE asset_id = a.asset_id AND transaction_type IN ('BUY', 'DIVIDEND') - COALESCE(SUM(shares_amount), 0) FROM transactions WHERE asset_id = a.asset_id AND transaction_type = 'SELL') * a.current_price) AS class_value
+                        FROM assets a
+                        WHERE a.user_id = %s
+                        GROUP BY a.asset_class;
+                    """, (user_id,))
+                    allocations = cur.fetchall()
+                    return allocations
+            except Exception as e:
+                print("Error getting asset allocation:", e)
+                return []
+            finally:
+                conn.close()
+        return []
